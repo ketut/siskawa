@@ -2,6 +2,7 @@
 
 let ws;
 let connectionStatus = document.getElementById('connection-status');
+let currentReplyData = null;
 
 document.addEventListener('DOMContentLoaded', () => {
     console.log('DOM loaded, initializing application...');
@@ -2494,3 +2495,293 @@ function showImportResults(result) {
         }
     }
 }
+
+// Update handleWebSocketMessage function
+function handleWebSocketMessage(data) {
+    console.log('Handling WebSocket message type:', data.type);
+    
+    switch (data.type) {
+        case 'qr_code':
+            console.log('QR Code received');
+            updateQRCode(data.data);
+            break;
+        case 'connection_status':
+            console.log('Connection status:', data.data);
+            updateConnectionStatus(data.data);
+            break;
+        case 'incoming_message':
+            console.log('Incoming message:', data.data);
+            addIncomingMessage(data.data);
+            break;
+        case 'bulk_progress':
+            console.log('Bulk progress update:', data.data);
+            updateBulkProgress(data.data);
+            break;
+        default:
+            console.log('Unknown message type:', data.type);
+    }
+}
+
+// Update addIncomingMessage function dengan reply button
+function addIncomingMessage(messageData) {
+    const container = document.getElementById('incoming-messages');
+    if (!container) return;
+    
+    // Remove "No messages yet" text
+    if (container.innerHTML.includes('No messages yet')) {
+        container.innerHTML = '';
+    }
+    
+    // Extract phone number from sender JID
+    const senderPhone = messageData.sender.replace('@s.whatsapp.net', '');
+    const formattedPhone = senderPhone.startsWith('+') ? senderPhone : `+${senderPhone}`;
+    
+    // Format timestamp
+    const timestamp = new Date(messageData.timestamp).toLocaleTimeString('en-US', {
+        hour: '2-digit',
+        minute: '2-digit'
+    });
+    
+    // Create message element with reply button
+    const messageElement = document.createElement('div');
+    messageElement.className = 'alert alert-success new-message mb-2';
+    messageElement.innerHTML = `
+        <div class="d-flex justify-content-between align-items-start">
+            <div class="flex-grow-1">
+                <div class="fw-bold">${formattedPhone}</div>
+                <div class="mb-1">${messageData.content}</div>
+                <small class="text-muted">${timestamp}</small>
+            </div>
+            <div class="ms-2">
+                <button class="btn btn-outline-primary btn-sm" 
+                        onclick="openQuickReply('${messageData.sender}', '${formattedPhone}', '${escapeForJs(messageData.content)}', '${messageData.timestamp}')"
+                        title="Reply to this message">
+                    <i class="fas fa-reply"></i>
+                </button>
+            </div>
+        </div>
+    `;
+    
+    // Add to top of container
+    container.insertBefore(messageElement, container.firstChild);
+    
+    // Keep only last 10 messages
+    while (container.children.length > 10) {
+        container.removeChild(container.lastChild);
+    }
+    
+    // Show notification (optional)
+    if (Notification.permission === 'granted') {
+        new Notification('New WhatsApp Message', {
+            body: `${formattedPhone}: ${messageData.content}`,
+            icon: '/favicon.ico'
+        });
+    }
+}
+
+// Helper function to escape strings for JavaScript
+function escapeForJs(str) {
+    return str.replace(/'/g, "\\'").replace(/"/g, '\\"').replace(/\n/g, '\\n');
+}
+
+// Quick Reply Functions
+window.openQuickReply = function(senderJid, phoneNumber, originalMessage, timestamp) {
+    console.log('Opening quick reply for:', { senderJid, phoneNumber, originalMessage });
+    
+    // Store reply data
+    currentReplyData = {
+        senderJid: senderJid,
+        phoneNumber: phoneNumber,
+        originalMessage: originalMessage,
+        timestamp: timestamp
+    };
+    
+    // Populate modal with contact info
+    const contactInfo = document.getElementById('reply-contact-info');
+    if (contactInfo) {
+        contactInfo.innerHTML = `
+            <div class="d-flex align-items-center">
+                <i class="fas fa-user me-2"></i>
+                <div>
+                    <strong>${phoneNumber}</strong><br>
+                    <small class="text-muted">${new Date(timestamp).toLocaleString()}</small>
+                </div>
+            </div>
+        `;
+    }
+    
+    // Show original message
+    const originalMsgDiv = document.getElementById('reply-original-message');
+    if (originalMsgDiv) {
+        originalMsgDiv.innerHTML = `
+            <i class="fas fa-quote-left me-1"></i>
+            ${originalMessage}
+        `;
+    }
+    
+    // Clear reply message field
+    const replyField = document.getElementById('reply-message');
+    if (replyField) {
+        replyField.value = '';
+        replyField.focus();
+    }
+    
+    // Show modal
+    const modal = new bootstrap.Modal(document.getElementById('quickReplyModal'));
+    modal.show();
+};
+
+window.insertTemplate = function(template) {
+    const replyField = document.getElementById('reply-message');
+    if (replyField) {
+        // If field is empty, replace with template
+        // If field has content, append template
+        if (replyField.value.trim() === '') {
+            replyField.value = template;
+        } else {
+            replyField.value += '\n\n' + template;
+        }
+        replyField.focus();
+    }
+};
+
+window.sendQuickReply = async function() {
+    if (!currentReplyData) {
+        showToast('Error', 'No reply data found', 'error');
+        return;
+    }
+    
+    const replyMessage = document.getElementById('reply-message')?.value.trim();
+    
+    if (!replyMessage) {
+        showToast('Error', 'Please enter a reply message', 'error');
+        return;
+    }
+    
+    console.log('Sending quick reply:', {
+        to: currentReplyData.phoneNumber,
+        message: replyMessage
+    });
+    
+    try {
+        // Show loading state
+        const sendBtn = document.querySelector('#quickReplyModal .btn-primary');
+        const originalText = sendBtn.innerHTML;
+        sendBtn.disabled = true;
+        sendBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Sending...';
+        
+        const response = await fetch('/api/send-message', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                to: currentReplyData.phoneNumber,
+                message: replyMessage
+            })
+        });
+        
+        const result = await response.json();
+        console.log('Quick reply result:', result);
+        
+        if (result.success) {
+            showToast('Success', `Reply sent to ${currentReplyData.phoneNumber}!`, 'success');
+            
+            // Close modal
+            const modal = bootstrap.Modal.getInstance(document.getElementById('quickReplyModal'));
+            modal.hide();
+            
+            // Clear reply data
+            currentReplyData = null;
+            
+            // Add sent message to conversation (optional)
+            addSentMessageToConversation(currentReplyData?.phoneNumber, replyMessage);
+            
+        } else {
+            showToast('Error', result.error || 'Failed to send reply', 'error');
+        }
+        
+        // Restore button state
+        sendBtn.disabled = false;
+        sendBtn.innerHTML = originalText;
+        
+    } catch (error) {
+        console.error('Quick reply error:', error);
+        showToast('Error', `Network error: ${error.message}`, 'error');
+        
+        // Restore button state
+        const sendBtn = document.querySelector('#quickReplyModal .btn-primary');
+        sendBtn.disabled = false;
+        sendBtn.innerHTML = '<i class="fas fa-paper-plane"></i> Send Reply';
+    }
+};
+
+// Add sent message to conversation visually (optional)
+function addSentMessageToConversation(phoneNumber, message) {
+    const container = document.getElementById('incoming-messages');
+    if (!container) return;
+    
+    const timestamp = new Date().toLocaleTimeString('en-US', {
+        hour: '2-digit',
+        minute: '2-digit'
+    });
+    
+    const messageElement = document.createElement('div');
+    messageElement.className = 'alert alert-primary new-message mb-2';
+    messageElement.innerHTML = `
+        <div class="d-flex justify-content-between align-items-start">
+            <div class="flex-grow-1">
+                <div class="fw-bold">You → ${phoneNumber}</div>
+                <div class="mb-1">${message}</div>
+                <small class="text-muted">${timestamp}</small>
+            </div>
+            <div class="ms-2">
+                <i class="fas fa-check text-success" title="Sent"></i>
+            </div>
+        </div>
+    `;
+    
+    // Add to top of container
+    container.insertBefore(messageElement, container.firstChild);
+    
+    // Keep only last 10 messages
+    while (container.children.length > 10) {
+        container.removeChild(container.lastChild);
+    }
+}
+
+window.clearIncomingMessages = function() {
+    const container = document.getElementById('incoming-messages');
+    if (container) {
+        container.innerHTML = '<p class="text-muted text-center">No messages yet...</p>';
+        showToast('Info', 'Message history cleared', 'info');
+    }
+};
+
+// Request notification permission on page load
+document.addEventListener('DOMContentLoaded', function() {
+    // Request notification permission
+    if ('Notification' in window && Notification.permission === 'default') {
+        Notification.requestPermission();
+    }
+    
+    // Existing DOMContentLoaded code...
+    setupWebSocket();
+    setupNavigation();
+    setupFormHandlers();
+    loadQRCode();
+});
+
+// Add keyboard shortcut for quick reply (Enter to send)
+document.addEventListener('keydown', function(e) {
+    // If quick reply modal is open and Enter is pressed (without Shift)
+    if (e.key === 'Enter' && !e.shiftKey) {
+        const modal = document.getElementById('quickReplyModal');
+        const replyField = document.getElementById('reply-message');
+        
+        if (modal && modal.classList.contains('show') && document.activeElement === replyField) {
+            e.preventDefault();
+            sendQuickReply();
+        }
+    }
+});
